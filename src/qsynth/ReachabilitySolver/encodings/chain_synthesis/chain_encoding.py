@@ -9,7 +9,6 @@ from qiskit import QuantumCircuit
 
 class ChainEncoding:
     def __init__(self, n, edges, M, k):
-        """n wires, edges = [(control, target)] in both directions, M = {j: n x n parity matrix}, k = {j: CNOTs}."""
         self.n, self.edges, self.M, self.k, self.s = n, edges, M, k, len(M)
         self.pool, self.clauses = IDPool(), []
         add, E, R = self.clauses.append, range(len(edges)), range(n)
