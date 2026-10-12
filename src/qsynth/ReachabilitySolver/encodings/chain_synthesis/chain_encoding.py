@@ -1,19 +1,3 @@
-"""
-Chain encoding: layout-aware CNOT re-synthesis of a whole circuit, one SAT formula per split of the CNOT count.
-Simple reference version of the specification in docs/chain_encoding/chain_spec.pdf (constraints C1-C4); it favours
-clarity over speed. Terms as in Shaik & van de Pol, "Optimal Layout-Aware CNOT Circuit Synthesis with Qubit
-Permutation" (arXiv:2408.04349), Section 5.
-
-The circuit is split at its single-qubit gates into CNOT-only sections 1..s; section j starts at boundary j-1 and ends
-at boundary j. Section j has k_j steps, each exactly one CNOT. The optimum is the smallest k_1 + ... + k_s for which
-C1-C4 are satisfiable.
-
-Variables (n wires, values x < n_l are the logical qubits, the others are dummies for the empty wires):
-  pi(j, x, p)       value x sits on wire p at boundary j                         (j = 0..s)
-  m(j, t, r, p)     wire p contains value r after step t of section j            (t = 0..k_j)
-  cnot(j, t, e)     step t of section j is a CNOT on edge e = (control, target)  (t = 0..k_j-1)
-  trg(j, t, q)      wire q is the target of step t of section j
-"""
 import itertools
 
 import numpy as np
