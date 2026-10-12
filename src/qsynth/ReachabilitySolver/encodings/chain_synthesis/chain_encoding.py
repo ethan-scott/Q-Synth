@@ -70,9 +70,7 @@ class ChainEncoding:
 
 
 def slice_circuit(circuit):
-    """Splits the circuit at its single-qubit gates: returns (one_qubit_blocks, cnot_blocks), one more 1-qubit block
-    than CNOT blocks; 1-qubit gate i of block j acts at boundary j. A 1-qubit gate is moved before the CNOTs that do
-    not touch its qubit, so a section only ends when a CNOT meets a qubit with a pending 1-qubit gate."""
+    """Splits the circuit at its single-qubit gates into (one_qubit_blocks, cnot_blocks)."""
     one_qubit, cnots, current, pending, blocked = [[]], [], [], [], set()
     for instruction in circuit.data:
         name, qubits = instruction.operation.name, [circuit.find_bit(q).index for q in instruction.qubits]
