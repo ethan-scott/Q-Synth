@@ -24,7 +24,7 @@ class ChainEncoding:
         for j in M:
             for t in range(k[j]):
                 # C3a: exactly one CNOT per step, only on coupling-graph edges
-                self.exactly_one([self.cnot(j, t, e) for e in E])
+                self.one_cnot(j, t)
                 # C3b: trg(q) <-> some CNOT has target q
                 for q in R:
                     into_q = [self.cnot(j, t, e) for e in E if edges[e][1] == q]
@@ -56,6 +56,9 @@ class ChainEncoding:
     def pi(self, j, x, p): return self.pool.id(("pi", j, x, p))
     def cnot(self, j, t, e): return self.pool.id(("cnot", j, t, e))
     def trg(self, j, t, q): return self.pool.id(("trg", j, t, q))
+
+    def one_cnot(self, j, t):
+        self.exactly_one([self.cnot(j, t, e) for e in range(len(self.edges))])
 
     def exactly_one(self, lits):
         self.clauses.extend(CardEnc.equals(lits=lits, bound=1, vpool=self.pool, encoding=EncType.seqcounter).clauses)
@@ -114,7 +117,7 @@ def solve(n, edges, M):
                     return (B,) + encoding.decode(solver.get_model())
 
 
-def chain_synthesis(circuit, coupling_graph, n):
+def chain_synthesis(circuit, coupling_graph, n, solve=solve):
     """Maps `circuit` onto n wires with the given coupling graph using the fewest CNOTs (for this slicing).
     Returns (mapped circuit, CNOT count, initial mapping, final mapping); mappings are {logical qubit: wire}."""
     edges = sorted({(a, b) for a, b in coupling_graph} | {(b, a) for a, b in coupling_graph})
