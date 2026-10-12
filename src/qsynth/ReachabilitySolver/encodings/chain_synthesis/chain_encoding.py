@@ -19,7 +19,7 @@ class ChainEncoding:
                 self.exactly_one([self.pi(j, a, p) for p in R])
                 self.exactly_one([self.pi(j, x, a) for x in R])
 
-        # C2: section j starts in layout pi^{j-1}; implemented by sharing the variables, see m()
+        # C2: section j starts in layout pi^{j-1} (in m())
 
         for j in M:
             for t in range(k[j]):
