@@ -101,30 +101,14 @@ def parity_matrix(cnots, n):
     return M
 
 
-def lower_bound(M):
-    """Every non-unit column needs a CNOT, and a column with w ones needs >= w - 1 CNOTs."""
-    weights = M.sum(axis=0)
-    return int(max((weights > 1).sum(), weights.max() - 1))
-
-
-def splits(total, parts):
-    """Every tuple of `parts` non-negative integers that sums to `total`."""
-    if parts == 1:
-        yield (total,)
-        return
-    for first in range(total + 1):
-        for rest in splits(total - first, parts - 1):
-            yield (first,) + rest
-
-
 def solve(n, edges, M):
-    """Smallest k_1 + ... + k_s for which C1-C4 are satisfiable: try the totals B upwards from the lower bound and,
-    for each B, every split with k_j >= lower_bound(M_j). Returns (B, layouts, cnots)."""
-    low = {j: lower_bound(M[j]) for j in M}
-    for B in itertools.count(sum(low.values())):
-        for add in splits(B - sum(low.values()), len(M)):
-            k = {j: low[j] + a for j, a in zip(M, add)}
-            encoding = ChainEncoding(n, edges, M, k)
+    """Smallest k_1 + ... + k_s for which C1-C4 are satisfiable: try the totals B = 0, 1, 2, ... and, for each B,
+    every split (k_1, ..., k_s) of B. Returns (B, layouts, cnots)."""
+    for B in itertools.count():
+        for split in itertools.product(range(B + 1), repeat=len(M)):
+            if sum(split) != B:
+                continue
+            encoding = ChainEncoding(n, edges, M, dict(zip(M, split)))
             with Solver(name="cd19", bootstrap_with=encoding.clauses) as solver:
                 if solver.solve():
                     return (B,) + encoding.decode(solver.get_model())
