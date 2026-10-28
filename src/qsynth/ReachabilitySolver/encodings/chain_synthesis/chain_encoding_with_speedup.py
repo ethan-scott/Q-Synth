@@ -1,32 +1,17 @@
 """
 Faster search for the same optimum as chain_encoding.solve. Three changes, none of them in the specification:
-  - slots: section j gets K_j steps that may stay empty (at most one CNOT per step, empty steps last), so one formula
-    serves every split; "section j uses at most k_j CNOTs" is the assumption "step k_j of section j is empty";
+  - one formula: section j gets K_j steps, so one formula serves every split; "section j uses at most k_j CNOTs" is
+    the assumption "step k_j of section j is empty";
   - lower bounds: every run of up to `window` consecutive sections is solved on its own; a split that gives a run
     fewer CNOTs than its bound is skipped;
   - cores: an unsatisfiable split names the sections whose limits caused it; every split that is at most as large on
     those sections is skipped.
-Dropping the empty steps turns any solution into one of the reference encoding with the same CNOTs, and vice versa,
-so both have the same optimum.
+All three rely on C3a allowing empty steps: a split that is satisfiable stays satisfiable when any k_j grows.
 """
-from pysat.card import CardEnc, EncType
 from pysat.solvers import Solver
 
 from qsynth.ReachabilitySolver.encodings.chain_synthesis import chain_encoding
 from qsynth.ReachabilitySolver.encodings.chain_synthesis.chain_encoding import ChainEncoding
-
-
-class SlotEncoding(ChainEncoding):
-    def one_cnot(self, j, t):
-        step = [self.cnot(j, t, e) for e in range(len(self.edges))]
-        self.clauses.extend(CardEnc.atmost(lits=step, bound=1, vpool=self.pool, encoding=EncType.seqcounter).clauses)
-        if t > 0:
-            previous = [self.cnot(j, t - 1, e) for e in range(len(self.edges))]
-            for lit in step:
-                self.clauses.append([-lit] + previous)
-
-    def empty(self, j, t):
-        return [-self.cnot(j, t, e) for e in range(len(self.edges))]
 
 
 def column_bound(M):
@@ -77,7 +62,7 @@ def search(n, edges, M, bounds):
     B, slack = lower, 4
     while True:
         K = {j: lower + slack - others[j] for j in M}
-        encoding, cores = SlotEncoding(n, edges, M, K), []
+        encoding, cores = ChainEncoding(n, edges, M, K), []
         with Solver(name="cd19", bootstrap_with=encoding.clauses) as solver:
             while B <= lower + slack:
                 for k in splits(s, B, bounds, K, cores):

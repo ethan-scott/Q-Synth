@@ -6,6 +6,9 @@ from pysat.formula import IDPool
 from pysat.solvers import Solver
 from qiskit import QuantumCircuit
 
+from qsynth.Utilities.slices import get_slices
+from qsynth.api import make_bidirectional_graph
+
 
 class ChainEncoding:
     def __init__(self, n, edges, M, k):
@@ -23,25 +26,20 @@ class ChainEncoding:
 
         for j in M:
             for t in range(k[j]):
-                # C3a: exactly one CNOT per step, only on coupling-graph edges
-                self.one_cnot(j, t)
-                # C3b: trg(q) <-> some CNOT has target q
-                for q in R:
-                    into_q = [self.cnot(j, t, e) for e in E if edges[e][1] == q]
-                    add([-self.trg(j, t, q)] + into_q)
-                    for lit in into_q:
-                        add([-lit, self.trg(j, t, q)])
+                # C3a: at most one CNOT per step, only on coupling-graph edges; empty steps come last
+                self.at_most_one_cnot(j, t)
+                into = {q: [self.cnot(j, t, e) for e in E if edges[e][1] == q] for q in R}
                 for r in R:
                     for e, (p, q) in enumerate(edges):
                         c, ctrl, old, new = self.cnot(j, t, e), self.m(j, t, r, p), self.m(j, t, r, q), self.m(j, t + 1, r, q)
-                        # C3c: control contains r -> target flips r
+                        # C3b: control contains r -> target flips r
                         add([-c, -ctrl, old, new]); add([-c, -ctrl, -old, -new])
-                        # C3d: control lacks r -> target keeps r
+                        # C3c: control lacks r -> target keeps r
                         add([-c, ctrl, old, -new]); add([-c, ctrl, -old, new])
-                    # C3e: a wire that is not the target stays the same
+                    # C3d: a wire that changes is the target of this step's CNOT
                     for q in R:
-                        add([self.trg(j, t, q), -self.m(j, t, r, q), self.m(j, t + 1, r, q)])
-                        add([self.trg(j, t, q), self.m(j, t, r, q), -self.m(j, t + 1, r, q)])
+                        add([-self.m(j, t, r, q), self.m(j, t + 1, r, q)] + into[q])
+                        add([self.m(j, t, r, q), -self.m(j, t + 1, r, q)] + into[q])
             # C4: value x on wire p at boundary j -> wire p holds column x of M_j
             for x in R:
                 for p in R:
@@ -55,10 +53,16 @@ class ChainEncoding:
 
     def pi(self, j, x, p): return self.pool.id(("pi", j, x, p))
     def cnot(self, j, t, e): return self.pool.id(("cnot", j, t, e))
-    def trg(self, j, t, q): return self.pool.id(("trg", j, t, q))
+    def step(self, j, t): return [self.cnot(j, t, e) for e in range(len(self.edges))]
 
-    def one_cnot(self, j, t):
-        self.exactly_one([self.cnot(j, t, e) for e in range(len(self.edges))])
+    def at_most_one_cnot(self, j, t):
+        self.clauses.extend(CardEnc.atmost(lits=self.step(j, t), bound=1, vpool=self.pool, encoding=EncType.seqcounter).clauses)
+        if t > 0:
+            for lit in self.step(j, t):
+                self.clauses.append([-lit] + self.step(j, t - 1))
+
+    def empty(self, j, t):
+        return [-lit for lit in self.step(j, t)]
 
     def exactly_one(self, lits):
         self.clauses.extend(CardEnc.equals(lits=lits, bound=1, vpool=self.pool, encoding=EncType.seqcounter).clauses)
@@ -72,28 +76,16 @@ class ChainEncoding:
         return layouts, cnots
 
 
-def slice_circuit(circuit):
-    """Splits the circuit at its single-qubit gates into (one_qubit_blocks, cnot_blocks)."""
-    one_qubit, cnots, current, pending, blocked = [[]], [], [], [], set()
+def without_barriers(circuit):
+    """Copy of the circuit without barriers (they would cut sections); only cx and 1-qubit gates are allowed."""
+    gates = circuit.copy_empty_like()
     for instruction in circuit.data:
-        name, qubits = instruction.operation.name, [circuit.find_bit(q).index for q in instruction.qubits]
-        if name == "barrier":
-            continue
-        if name == "cx":
-            if blocked & set(qubits):
-                cnots.append(current); one_qubit.append(pending)
-                current, pending, blocked = [], [], set()
-            current.append(tuple(qubits))
-        elif len(qubits) == 1:
-            if current:
-                pending.append((instruction.operation, qubits[0])); blocked.add(qubits[0])
-            else:
-                one_qubit[-1].append((instruction.operation, qubits[0]))
-        else:
+        name = instruction.operation.name
+        if name != "barrier" and name != "cx" and len(instruction.qubits) != 1:
             raise ValueError(f"only cx and 1-qubit gates are supported, got {name}")
-    if current:
-        cnots.append(current); one_qubit.append(pending)
-    return one_qubit, cnots
+        if name != "barrier":
+            gates.append(instruction)
+    return gates
 
 
 def parity_matrix(cnots, n):
@@ -105,24 +97,29 @@ def parity_matrix(cnots, n):
 
 
 def solve(n, edges, M):
-    """Smallest k_1 + ... + k_s for which C1-C4 are satisfiable: try the totals B = 0, 1, 2, ... and, for each B,
-    every split (k_1, ..., k_s) of B. Returns (B, layouts, cnots)."""
+    """Smallest total CNOT count: for B = 0, 1, 2, ..., give every section B steps and allow at most B CNOTs in
+    total. This is the smallest k_1 + ... + k_s for which C1-C4 are satisfiable. Returns (B, layouts, cnots)."""
     for B in itertools.count():
-        for split in itertools.product(range(B + 1), repeat=len(M)):
-            if sum(split) != B:
-                continue
-            encoding = ChainEncoding(n, edges, M, dict(zip(M, split)))
-            with Solver(name="cd19", bootstrap_with=encoding.clauses) as solver:
-                if solver.solve():
-                    return (B,) + encoding.decode(solver.get_model())
+        encoding = ChainEncoding(n, edges, M, {j: B for j in M})
+        every = [lit for j in M for t in range(B) for lit in encoding.step(j, t)]
+        total = CardEnc.atmost(lits=every, bound=B, vpool=encoding.pool, encoding=EncType.totalizer).clauses
+        with Solver(name="cd19", bootstrap_with=encoding.clauses + total) as solver:
+            if solver.solve():
+                return (B,) + encoding.decode(solver.get_model())
 
 
 def chain_synthesis(circuit, coupling_graph, n, solve=solve):
     """Maps `circuit` onto n wires with the given coupling graph using the fewest CNOTs (for this slicing).
     Returns (mapped circuit, CNOT count, initial mapping, final mapping); mappings are {logical qubit: wire}."""
-    edges = sorted({(a, b) for a, b in coupling_graph} | {(b, a) for a, b in coupling_graph})
-    one_qubit, blocks = slice_circuit(circuit)
-    M = {j: parity_matrix(block, n) for j, block in enumerate(blocks, start=1)}
+    edges = make_bidirectional_graph(coupling_graph)
+    # Sections: Q-Synth's maximal CNOT slices (as in the ECAI'24 peephole); one_qubit[j] runs after section j
+    circuit = without_barriers(circuit)
+    qubits = [[circuit.find_bit(q).index for q in instruction.qubits] for instruction in circuit.data]
+    one_qubit, M = [[]], {}
+    for single, cx in get_slices(circuit, lambda instruction: instruction.operation.name == "cx"):
+        one_qubit[-1] += [(circuit.data[g].operation, qubits[g][0]) for g in single]
+        if cx:
+            M[len(M) + 1] = parity_matrix([qubits[g] for g in cx], n); one_qubit.append([])
     if not M:
         return circuit.copy(), 0, {q: q for q in range(circuit.num_qubits)}, {q: q for q in range(circuit.num_qubits)}
     cost, layouts, cnots = solve(n, edges, M)
