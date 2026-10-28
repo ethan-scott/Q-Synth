@@ -12,12 +12,12 @@ from qsynth.api import make_bidirectional_graph
 
 class ChainEncoding:
     def __init__(self, n, edges, M, k):
-        self.n, self.edges, self.M, self.k, self.s = n, edges, M, k, len(M)
+        self.n, self.edges, self.k = n, edges, k
         self.pool, self.clauses = IDPool(), []
         add, E, R = self.clauses.append, range(len(edges)), range(n)
 
         # C1: every boundary is a permutation (each value on one wire, each wire holds one value)
-        for j in range(self.s + 1):
+        for j in range(len(M) + 1):
             for a in R:
                 self.exactly_one([self.pi(j, a, p) for p in R])
                 self.exactly_one([self.pi(j, x, a) for x in R])
@@ -70,9 +70,9 @@ class ChainEncoding:
     def decode(self, model):
         """Returns (layouts pi^0..pi^s as {value: wire}, CNOTs per section as [(control, target)])."""
         true, R = {lit for lit in model if lit > 0}, range(self.n)
-        layouts = [{x: p for x in R for p in R if self.pi(j, x, p) in true} for j in range(self.s + 1)]
+        layouts = [{x: p for x in R for p in R if self.pi(j, x, p) in true} for j in range(len(self.k) + 1)]
         cnots = {j: [self.edges[e] for t in range(self.k[j]) for e in range(len(self.edges))
-                     if self.cnot(j, t, e) in true] for j in self.M}
+                     if self.cnot(j, t, e) in true] for j in self.k}
         return layouts, cnots
 
 
@@ -120,8 +120,6 @@ def chain_synthesis(circuit, coupling_graph, n, solve=solve):
         one_qubit[-1] += [(circuit.data[g].operation, qubits[g][0]) for g in single]
         if cx:
             M[len(M) + 1] = parity_matrix([qubits[g] for g in cx], n); one_qubit.append([])
-    if not M:
-        return circuit.copy(), 0, {q: q for q in range(circuit.num_qubits)}, {q: q for q in range(circuit.num_qubits)}
     cost, layouts, cnots = solve(n, edges, M)
     mapped = QuantumCircuit(n)
     for j in range(len(M) + 1):
@@ -133,13 +131,3 @@ def chain_synthesis(circuit, coupling_graph, n, solve=solve):
     logical = range(circuit.num_qubits)
     return mapped, cost, {q: layouts[0][q] for q in logical}, {q: layouts[-1][q] for q in logical}
 
-
-if __name__ == "__main__":
-    # cx q0,q2 . t q2 . cx q0,q1 on the line 0 - 1 - 2
-    from qsynth.api import check_equivalence
-    circuit = QuantumCircuit(3)
-    circuit.cx(0, 2); circuit.t(2); circuit.cx(0, 1)
-    mapped, cost, initial, final = chain_synthesis(circuit, [(0, 1), (1, 2)], 3)
-    check_equivalence(circuit, mapped, final_mapping=final, initial_mapping=initial)
-    print(f"{cost} CNOTs, initial mapping {initial}, final mapping {final}, equivalent")
-    print(mapped)
