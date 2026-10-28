@@ -1,11 +1,12 @@
 import itertools
 
-import numpy as np
 from pysat.card import CardEnc, EncType
 from pysat.formula import IDPool
 from pysat.solvers import Solver
 from qiskit import QuantumCircuit
+from qiskit.transpiler.passes import RemoveBarriers
 
+from qsynth.ReachabilitySolver.encodings.cnot_synthesis.cnot_reachability_utils import get_goal_matrix_from_cnot_circuit
 from qsynth.Utilities.slices import get_slices
 from qsynth.api import make_bidirectional_graph
 
@@ -76,26 +77,6 @@ class ChainEncoding:
         return layouts, cnots
 
 
-def without_barriers(circuit):
-    """Copy of the circuit without barriers (they would cut sections); only cx and 1-qubit gates are allowed."""
-    gates = circuit.copy_empty_like()
-    for instruction in circuit.data:
-        name = instruction.operation.name
-        if name != "barrier" and name != "cx" and len(instruction.qubits) != 1:
-            raise ValueError(f"only cx and 1-qubit gates are supported, got {name}")
-        if name != "barrier":
-            gates.append(instruction)
-    return gates
-
-
-def parity_matrix(cnots, n):
-    """Column x lists the input values XOR-ed together on qubit x after the CNOTs."""
-    M = np.eye(n, dtype=int)
-    for c, t in cnots:
-        M[:, t] ^= M[:, c]
-    return M
-
-
 def solve(n, edges, M):
     """Smallest total CNOT count: for B = 0, 1, 2, ..., give every section B steps and allow at most B CNOTs in
     total. This is the smallest k_1 + ... + k_s for which C1-C4 are satisfiable. Returns (B, layouts, cnots)."""
@@ -113,13 +94,19 @@ def chain_synthesis(circuit, coupling_graph, n, solve=solve):
     Returns (mapped circuit, CNOT count, initial mapping, final mapping); mappings are {logical qubit: wire}."""
     edges = make_bidirectional_graph(coupling_graph)
     # Sections: Q-Synth's maximal CNOT slices (as in the ECAI'24 peephole); one_qubit[j] runs after section j
-    circuit = without_barriers(circuit)
+    circuit = RemoveBarriers()(circuit)
+    for instruction in circuit.data:
+        if instruction.operation.name != "cx" and len(instruction.qubits) != 1:
+            raise ValueError(f"only cx and 1-qubit gates are supported, got {instruction.operation.name}")
     qubits = [[circuit.find_bit(q).index for q in instruction.qubits] for instruction in circuit.data]
     one_qubit, M = [[]], {}
     for single, cx in get_slices(circuit, lambda instruction: instruction.operation.name == "cx"):
         one_qubit[-1] += [(circuit.data[g].operation, qubits[g][0]) for g in single]
         if cx:
-            M[len(M) + 1] = parity_matrix([qubits[g] for g in cx], n); one_qubit.append([])
+            section = QuantumCircuit(n)
+            for g in cx:
+                section.cx(*qubits[g])
+            M[len(M) + 1] = get_goal_matrix_from_cnot_circuit(section); one_qubit.append([])
     cost, layouts, cnots = solve(n, edges, M)
     mapped = QuantumCircuit(n)
     for j in range(len(M) + 1):
