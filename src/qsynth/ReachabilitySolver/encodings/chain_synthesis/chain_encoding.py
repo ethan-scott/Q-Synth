@@ -93,27 +93,27 @@ def chain_synthesis(circuit, coupling_graph, n, solve=solve):
     """Maps `circuit` onto n wires with the given coupling graph using the fewest CNOTs (for this slicing).
     Returns (mapped circuit, CNOT count, initial mapping, final mapping); mappings are {logical qubit: wire}."""
     edges = make_bidirectional_graph(coupling_graph)
-    # Sections: Q-Synth's maximal CNOT slices (as in the ECAI'24 peephole); one_qubit[j] runs after section j
+    # Sections: Q-Synth's maximal CNOT slices (as in the ECAI'24 peephole); gates_1q[j] runs after section j
     circuit = RemoveBarriers()(circuit)
     for instruction in circuit.data:
         if instruction.operation.name != "cx" and len(instruction.qubits) != 1:
             raise ValueError(f"only cx and 1-qubit gates are supported, got {instruction.operation.name}")
     qubits = [[circuit.find_bit(q).index for q in instruction.qubits] for instruction in circuit.data]
-    one_qubit, M = [[]], {}
-    for single, cx in get_slices(circuit, lambda instruction: instruction.operation.name == "cx"):
-        one_qubit[-1] += [(circuit.data[g].operation, qubits[g][0]) for g in single]
-        if cx:
+    gates_1q, M = [[]], {}
+    for slice_1q, slice_cx in get_slices(circuit, lambda instruction: instruction.operation.name == "cx"):
+        gates_1q[-1] += [(circuit.data[g].operation, qubits[g][0]) for g in slice_1q]
+        if slice_cx:
             section = QuantumCircuit(n)
-            for g in cx:
+            for g in slice_cx:
                 section.cx(*qubits[g])
-            M[len(M) + 1] = get_goal_matrix_from_cnot_circuit(section); one_qubit.append([])
+            M[len(M) + 1] = get_goal_matrix_from_cnot_circuit(section); gates_1q.append([])
     cost, layouts, cnots = solve(n, edges, M)
     mapped = QuantumCircuit(n)
     for j in range(len(M) + 1):
         if j > 0:
             for c, t in cnots[j]:
                 mapped.cx(c, t)
-        for gate, q in one_qubit[j]:
+        for gate, q in gates_1q[j]:
             mapped.append(gate, [layouts[j][q]])
     logical = range(circuit.num_qubits)
     return mapped, cost, {q: layouts[0][q] for q in logical}, {q: layouts[-1][q] for q in logical}
