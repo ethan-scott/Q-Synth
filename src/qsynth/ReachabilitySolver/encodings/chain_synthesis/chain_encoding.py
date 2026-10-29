@@ -13,6 +13,11 @@ from qsynth.api import make_bidirectional_graph
 
 
 class ChainEncoding:
+    # j     slice number
+    # t     step inside a slice (at most one CNOT per step)
+    # x, r  logical qubits (x: which logical qubit sits on p; r: a logical qubit XORed into p's value)
+    # p, q  physical qubits (in a CNOT: p = control, q = target)
+    # e     index of a coupling-graph edge: edges[e] = (p, q)
     def __init__(self, num_physical_qubits, edges, goal_matrices, steps):
         self.num_physical_qubits, self.edges, self.steps = num_physical_qubits, edges, steps
         self.id_pool, self.clauses = IDPool(), []
@@ -53,12 +58,15 @@ class ChainEncoding:
                         final = self.m(j, steps[j], r, p)
                         add_clause([-self.pi(j, x, p), final if goal_matrices[j][r, x] else -final])
 
+    # m(j, t, r, p): the parity of physical qubit p includes logical qubit r, after step t of slice j
     def m(self, j, t, r, p):
         if t == 0:
             return self.pi(j - 1, r, p)          # C2
         return self.id_pool.id(("m", j, t, r, p))
 
+    # pi(j, x, p): logical qubit x sits on physical qubit p at boundary j
     def pi(self, j, x, p): return self.id_pool.id(("pi", j, x, p))
+    # cnot(j, t, e): step t of slice j is a CNOT on edge e
     def cnot(self, j, t, e): return self.id_pool.id(("cnot", j, t, e))
     def step(self, j, t): return [self.cnot(j, t, e) for e in range(len(self.edges))]
 
