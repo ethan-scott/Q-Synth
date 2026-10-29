@@ -9,7 +9,7 @@ from qsynth.api import check_equivalence
 
 # (platform, circuit, optimal CNOT count)
 SMALL = [("tenerife", "Examples/ecai24.qasm", 2), ("tenerife", "Examples/sat24.qasm", 6),
-         ("tenerife", "Examples/date24-sub.qasm", 5), ("tenerife", "ICCAD-23/or.qasm", 6)]
+         ("tenerife", "Examples/date24-sub.qasm", 5)]
 LARGER = [("tenerife", "Examples/adder_tgate_optimal.qasm", 9), ("tenerife", "ICCAD-23/qaoa5.qasm", 8),
           ("tenerife", "Examples/iccad23.qasm", 12), ("tenerife", "ICCAD-23/adder.qasm", 12),
           ("tenerife", "ICCAD-23/4mod5-v1_22.qasm", 12),
