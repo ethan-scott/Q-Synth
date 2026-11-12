@@ -13,71 +13,83 @@ from qsynth.api import make_bidirectional_graph
 
 
 class ChainEncoding:
-    # j     slice number
-    # t     step inside a slice (at most one CNOT per step)
-    # x, r  logical qubits (x: which logical qubit sits on p; r: a logical qubit XORed into p's value)
-    # p, q  physical qubits (in a CNOT: p = control, q = target)
-    # e     index of a coupling-graph edge: edges[e] = (p, q)
+    # Variables, as in ChainEncoding.pdf:
+    #   pi^j_{x,p}     logical qubit x sits on physical qubit p at the end of slice j (pi^0: initial layout)
+    #   ctrl^{j,t}_p   physical qubit p is the control of the CNOT at step t of slice j
+    #   trg^{j,t}_q    physical qubit q is the target of the CNOT at step t of slice j
+    #   m^{j,t}_{r,p}  the parity of physical qubit p includes logical qubit r after t CNOTs of slice j
+    #   used^{j,t}     step t of slice j has a CNOT (the counter variable: B counts these, one per step)
+    # Indices: j slice, t step, x and r logical qubits, p and q physical qubits.
     def __init__(self, num_physical_qubits, edges, goal_matrices, steps):
-        self.num_physical_qubits, self.edges, self.steps = num_physical_qubits, edges, steps
+        self.num_physical_qubits, self.steps = num_physical_qubits, steps
         self.id_pool, self.clauses = IDPool(), []
-        add_clause, edge_ids, qubits = self.clauses.append, range(len(edges)), range(num_physical_qubits)
+        add_clause, qubits = self.clauses.append, range(num_physical_qubits)
+        edge_set = set(map(tuple, edges))
 
-        # C1: at every boundary, each logical qubit sits on exactly one physical qubit and each physical qubit holds exactly one logical qubit
+        # C1: every pi^j is one-hot: each logical qubit on exactly one physical qubit and vice versa
         for j in range(len(goal_matrices) + 1):
             for x in qubits:
                 self.exactly_one([self.pi(j, x, p) for p in qubits])
             for p in qubits:
                 self.exactly_one([self.pi(j, x, p) for x in qubits])
 
-        # C2: slice j starts in layout pi^{j-1} (in m())
+        # C2: m^{j,0} = pi^{j-1} (in m())
 
         for j in goal_matrices:
             for t in range(steps[j]):
-                # C3a: at most one CNOT per step, only on coupling-graph edges; empty steps come last
-                self.at_most_one_cnot(j, t)
-                into = {q: [self.cnot(j, t, e) for e in edge_ids if edges[e][1] == q] for q in qubits}
-                for r in qubits:
-                    for e, (p, q) in enumerate(edges):
-                        cnot_var = self.cnot(j, t, e)
-                        control_has_r, target_had_r, target_has_r = self.m(j, t, r, p), self.m(j, t, r, q), self.m(j, t + 1, r, q)
-                        # C3b: control contains r -> target flips r
-                        add_clause([-cnot_var, -control_has_r, target_had_r, target_has_r])
-                        add_clause([-cnot_var, -control_has_r, -target_had_r, -target_has_r])
-                        # C3c: control lacks r -> target keeps r
-                        add_clause([-cnot_var, control_has_r, target_had_r, -target_has_r])
-                        add_clause([-cnot_var, control_has_r, -target_had_r, target_has_r])
-                    # C3d: a physical qubit whose parity changes is the target of this step's CNOT
+                # C3a: at most one control and one target per step; used^{j,t} iff the step has a control,
+                # iff it has a target
+                used = self.used(j, t)
+                self.at_most_one([self.ctrl(j, t, p) for p in qubits])
+                self.at_most_one([self.trg(j, t, q) for q in qubits])
+                add_clause([-used] + [self.ctrl(j, t, p) for p in qubits])
+                add_clause([-used] + [self.trg(j, t, q) for q in qubits])
+                for p in qubits:
+                    add_clause([-self.ctrl(j, t, p), used])
+                    add_clause([-self.trg(j, t, p), used])
+                # C3b: control and target are a coupling-graph edge (this also rules out p = q)
+                for p in qubits:
                     for q in qubits:
-                        add_clause([-self.m(j, t, r, q), self.m(j, t + 1, r, q)] + into[q])
-                        add_clause([self.m(j, t, r, q), -self.m(j, t + 1, r, q)] + into[q])
-            # C4: logical qubit x on physical qubit p at boundary j -> the parity of p is column x of goal_matrices[j]
+                        if (p, q) not in edge_set:
+                            add_clause([-self.ctrl(j, t, p), -self.trg(j, t, q)])
+                # C3c: empty steps come last
+                if t > 0:
+                    add_clause([-used, self.used(j, t - 1)])
+                for r in qubits:
+                    # C3d: the target q flips r if the control p has r, and keeps r otherwise
+                    for p, q in edge_set:
+                        ctrl, trg = self.ctrl(j, t, p), self.trg(j, t, q)
+                        control_has_r, target_had_r, target_has_r = self.m(j, t, r, p), self.m(j, t, r, q), self.m(j, t + 1, r, q)
+                        add_clause([-ctrl, -trg, -control_has_r, target_had_r, target_has_r])
+                        add_clause([-ctrl, -trg, -control_has_r, -target_had_r, -target_has_r])
+                        add_clause([-ctrl, -trg, control_has_r, target_had_r, -target_has_r])
+                        add_clause([-ctrl, -trg, control_has_r, -target_had_r, target_has_r])
+                    # C3e: a physical qubit that is not the target keeps its parity
+                    for q in qubits:
+                        add_clause([self.trg(j, t, q), -self.m(j, t, r, q), self.m(j, t + 1, r, q)])
+                        add_clause([self.trg(j, t, q), self.m(j, t, r, q), -self.m(j, t + 1, r, q)])
+            # C4: m^{j,final} = M_j pi^j: if logical qubit x sits on p in pi^j, the parity of p is column x of M_j
             for x in qubits:
                 for p in qubits:
                     for r in qubits:
                         final = self.m(j, steps[j], r, p)
                         add_clause([-self.pi(j, x, p), final if goal_matrices[j][r, x] else -final])
 
-    # m(j, t, r, p): the parity of physical qubit p includes logical qubit r, after step t of slice j
     def m(self, j, t, r, p):
         if t == 0:
             return self.pi(j - 1, r, p)          # C2
         return self.id_pool.id(("m", j, t, r, p))
 
-    # pi(j, x, p): logical qubit x sits on physical qubit p at boundary j
     def pi(self, j, x, p): return self.id_pool.id(("pi", j, x, p))
-    # cnot(j, t, e): step t of slice j is a CNOT on edge e
-    def cnot(self, j, t, e): return self.id_pool.id(("cnot", j, t, e))
-    def step(self, j, t): return [self.cnot(j, t, e) for e in range(len(self.edges))]
-
-    def at_most_one_cnot(self, j, t):
-        self.clauses.extend(CardEnc.atmost(lits=self.step(j, t), bound=1, vpool=self.id_pool, encoding=EncType.seqcounter).clauses)
-        if t > 0:
-            for cnot_var in self.step(j, t):
-                self.clauses.append([-cnot_var] + self.step(j, t - 1))
+    def ctrl(self, j, t, p): return self.id_pool.id(("ctrl", j, t, p))
+    def trg(self, j, t, q): return self.id_pool.id(("trg", j, t, q))
+    def used(self, j, t): return self.id_pool.id(("used", j, t))
 
     def empty(self, j, t):
-        return [-cnot_var for cnot_var in self.step(j, t)]
+        return [-self.used(j, t)]
+
+    def at_most_one(self, lits):
+        self.clauses.extend(CardEnc.atmost(lits=lits, bound=1, vpool=self.id_pool, encoding=EncType.seqcounter).clauses)
 
     def exactly_one(self, lits):
         self.clauses.extend(CardEnc.equals(lits=lits, bound=1, vpool=self.id_pool, encoding=EncType.seqcounter).clauses)
@@ -86,8 +98,8 @@ class ChainEncoding:
         """Returns (layouts pi^0..pi^s as {logical qubit: physical qubit}, CNOTs per slice as [(control, target)])."""
         true, qubits = {lit for lit in model if lit > 0}, range(self.num_physical_qubits)
         layouts = [{x: p for x in qubits for p in qubits if self.pi(j, x, p) in true} for j in range(len(self.steps) + 1)]
-        cnots = {j: [self.edges[e] for t in range(self.steps[j]) for e in range(len(self.edges))
-                     if self.cnot(j, t, e) in true] for j in self.steps}
+        cnots = {j: [(p, q) for t in range(self.steps[j]) for p in qubits for q in qubits
+                     if self.ctrl(j, t, p) in true and self.trg(j, t, q) in true] for j in self.steps}
         return layouts, cnots
 
 
@@ -97,14 +109,10 @@ def solve(num_physical_qubits, edges, goal_matrices):
         # Generate constraints
         encoding = ChainEncoding(num_physical_qubits, edges, goal_matrices, {j: B for j in goal_matrices})
 
-        # all CNOT variables of all steps of all slices
-        cnot_vars = []
-        for j in goal_matrices:
-            for t in range(B):
-                cnot_vars += encoding.step(j, t)
+        # the counter variables of all steps of all slices: one true used per CNOT
+        used_vars = [encoding.used(j, t) for j in goal_matrices for t in range(B)]
 
-
-        at_most_B_cnots = CardEnc.atmost(lits=cnot_vars, bound=B, vpool=encoding.id_pool, encoding=EncType.totalizer).clauses
+        at_most_B_cnots = CardEnc.atmost(lits=used_vars, bound=B, vpool=encoding.id_pool, encoding=EncType.totalizer).clauses
         with Solver(name="cd19") as solver:
             solver.append_formula(encoding.clauses + at_most_B_cnots)
             if solver.solve():
